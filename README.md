@@ -1,72 +1,59 @@
 # gc2607-own
 
-视频会议摄像头的自研用户态管线。作者自评：**这是 vibe 的一坨**。
+> ## ⚠️ 这是 vibe 的一坨
+> 记录于 2026-11-04，由一个不会用 Intel HAL 的 agent 边试边写。
+> 能跑，但别当参考实现。
 
-## 这是什么
-
-HUAWEI MateBook GT 14（ENZH-XX）的前置摄像头是 GalaxyCore GC2607：1920x1080、
-RAW10 Bayer GRBG、MIPI CSI-2 双 lane，挂在 Intel IPU6 上，供电和时钟由 INT3472 提供。
-Linux 内核没有这颗传感器的驱动，Intel 的 HAL 也不认它，所以这里从零搭了一条能用的链路：
-
-```
-gc2607.ko (V4L2 sensor)
-  -> Intel IPU6 ISYS (内核自带)  /dev/videoN, SGRBG10
-  -> gc2607d (本项目)            去马赛克 / AWB / CCM / gamma / 降噪 -> YUYV
-  -> v4l2loopback                /dev/video60 "GC2607 Own"
-```
-
-`gc2607d` 是单文件 C 程序，不依赖 OpenCV、libcamera 或任何 Intel 闭源库。
-
-## 目录
+MateBook GT 14（ENZH-XX）那颗在 Linux 上没人管的摄像头，现在能用了：
+1080p、30fps、自动曝光和白平衡，在浏览器和会议软件里当成普通摄像头出现。
 
 ```
-src/gc2607d.c                     采集 + 图像处理 + AE/AWB + 输出守护进程
-kernel/gc2607.c                   传感器驱动（V4L2 subdev，CCI 寄存器接口）
-kernel/Makefile, dkms.conf        外部模块构建 / DKMS
-kernel/0001-ipu-bridge-add-gc2607.patch
-                                  给内核 ipu-bridge 加 GCTI2607 的传感器表项
-scripts/build.sh                  编译守护进程和两个内核模块
-scripts/run.sh                    加载 v4l2loopback 并前台运行管线
-scripts/install-boot.sh           装成开机自启（写 /lib/modules、modules-load.d）
+GC2607 传感器  →  gc2607.ko  →  IPU6 ISYS  →  gc2607d  →  v4l2loopback
+   1920x1080        V4L2          raw 节点      去马赛克       "GC2607 Own"
+   RAW10 GRBG       sensor                       白平衡/CCM
+   2 lane MIPI                                    /gamma/降噪
 ```
 
-## 依赖
+## 为什么有这东西
 
-- 内核头文件（与运行内核版本一致）
-- media-ctl、v4l-utils
-- gcc、libgomp（`-fopenmp`）
-- v4l2loopback（从源码编译，`scripts/build.sh` 会提示）
+内核里没有这颗传感器的驱动，Intel 那套 HAL 又只认它自己表里的型号，
+枚举不到这台机器上的 GC2607。所以最小可用的一条路是自己写：一个 V4L2 驱动，
+一个用户态处理程序，中间不经过任何闭源库。
 
-## 构建
+## 现在能做到什么
+
+- 1920×1080 @ 30.0fps，帧间隔稳定
+- 自动曝光（目标亮度 112/255）和逐帧收敛的灰度世界白平衡
+- 双线性去马赛克、3×3 CCM、sRGB gamma、轻度降噪
+- 输出为标准 v4l2loopback 设备，OBS、Chrome、会议软件都能选
+
+## 现在还不行
+
+- 室内光线下增益拉满，噪点明显；没有时域降噪，没有锐化
+- 60fps 需要重调 PLL 和 MIPI 速率，没做
+- 想拿它当主力直播摄像头还差点意思，当视频会议够用
+
+## 跑起来
 
 ```sh
-./scripts/build.sh
+./scripts/build.sh          # 编译守护进程和内核模块，不下载任何二进制
+sudo ./scripts/install-boot.sh
+sudo ./scripts/run.sh       # 之后在应用里选 GC2607 Own
 ```
 
-产物体积很小，构建过程不下载任何二进制包。
+需要内核头文件、gcc、v4l-utils、media-ctl、v4l2loopback。
 
-## 运行
+## 细节
 
-```sh
-sudo ./scripts/run.sh
-```
-
-然后在应用里选 **GC2607 Own**。
-
-## 当前状态
-
-- 1920x1080@30.0fps，AE 稳定在 luma 113 左右，AWB 逐帧收敛
-- 室内光线下增益拉得高，噪点明显；降噪目前只有 3x3 平均
-- 未做：时域降噪、锐化、HDR、60fps（需要重调 PLL 和 MIPI 速率）
-- 传感器固定挂在 CSI2-4，`gc2607d` 会自己从 media graph 里找端口和节点
+- 构建环境与可复现：`docs/BUILD.md`
+- 处理链和各参数的来由：`docs/DESIGN.md`
+- 踩过的坑：`docs/PITFALLS.md`
 
 ## 致谢
 
 驱动骨架和 30fps 的时序修法来自
-[abbood/gc2607-v4l2-driver](https://github.com/abbood/gc2607-v4l2-driver) 和
+[abbood/gc2607-v4l2-driver](https://github.com/abbood/gc2607-v4l2-driver) 与
 [AlexDaichendt/gc2607-camera-linux](https://github.com/AlexDaichendt/gc2607-camera-linux)。
-上游用的是 Intel HAL/PSYS 那一套（闭源二进制），在本机枚举不到这颗传感器，所以这里换成了纯自研的用户态处理。
+上游走的是 Intel HAL/PSYS（闭源二进制），在本机枚举不到传感器，这里换成了纯自研的用户态处理。
 
-## 许可
-
-`src/` 下为 MIT。`kernel/gc2607.c` 为 GPL-2.0。
+`src/` MIT，`kernel/gc2607.c` GPL-2.0。

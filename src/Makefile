@@ -1,5 +1,5 @@
 CC      ?= gcc
-CFLAGS  ?= -O2 -march=native -Wall -Wextra -fopenmp
+CFLAGS  ?= -O2 -std=gnu11 -fopenmp -Wall -Wextra -ffile-prefix-map=$(CURDIR)=.
 LDLIBS  ?= -lm
 
 gc2607d: gc2607d.c
