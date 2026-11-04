@@ -186,14 +186,14 @@ static int cap_open(const char *node, struct capbuf bufs[NBUF])
     f.fmt.pix.height = HEIGHT;
     f.fmt.pix.pixelformat = V4L2_PIX_FMT_SGRBG10;
     f.fmt.pix.field = V4L2_FIELD_NONE;
-    if (xioctl(fd, VIDIOC_S_FMT, &f) < 0) { perror("S_FMT"); return -1; }
+    if (xioctl(fd, VIDIOC_S_FMT, &f) < 0) { perror("S_FMT"); { close(fd); return -1; } }
 
     struct v4l2_requestbuffers req;
     memset(&req, 0, sizeof(req));
     req.count = NBUF;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     req.memory = V4L2_MEMORY_MMAP;
-    if (xioctl(fd, VIDIOC_REQBUFS, &req) < 0) { perror("REQBUFS"); return -1; }
+    if (xioctl(fd, VIDIOC_REQBUFS, &req) < 0) { perror("REQBUFS"); { close(fd); return -1; } }
 
     for (unsigned i = 0; i < NBUF; i++) {
         struct v4l2_buffer b;
@@ -201,14 +201,14 @@ static int cap_open(const char *node, struct capbuf bufs[NBUF])
         b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         b.memory = V4L2_MEMORY_MMAP;
         b.index = i;
-        if (xioctl(fd, VIDIOC_QUERYBUF, &b) < 0) { perror("QUERYBUF"); return -1; }
+        if (xioctl(fd, VIDIOC_QUERYBUF, &b) < 0) { perror("QUERYBUF"); { close(fd); return -1; } }
         bufs[i].len = b.length;
         bufs[i].start = mmap(NULL, b.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, b.m.offset);
-        if (bufs[i].start == MAP_FAILED) { perror("mmap"); return -1; }
-        if (xioctl(fd, VIDIOC_QBUF, &b) < 0) { perror("QBUF"); return -1; }
+        if (bufs[i].start == MAP_FAILED) { perror("mmap"); { close(fd); return -1; } }
+        if (xioctl(fd, VIDIOC_QBUF, &b) < 0) { perror("QBUF"); { close(fd); return -1; } }
     }
     enum v4l2_buf_type t = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (xioctl(fd, VIDIOC_STREAMON, &t) < 0) { perror("STREAMON"); return -1; }
+    if (xioctl(fd, VIDIOC_STREAMON, &t) < 0) { perror("STREAMON"); { close(fd); return -1; } }
     return fd;
 }
 
@@ -414,12 +414,46 @@ static int ctrl_get(int fd, int id)
     return c.value;
 }
 
+/* is anyone else holding the virtual camera open? */
+static int consumers_present(const char *node)
+{
+    DIR *p = opendir("/proc");
+    if (!p) return 1;
+    struct dirent *e;
+    int found = 0;
+    while (!found && (e = readdir(p))) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        int pid = atoi(e->d_name);
+        if (pid == getpid()) continue;
+        char dir[64];
+        snprintf(dir, sizeof(dir), "/proc/%d/fd", pid);
+        DIR *fd = opendir(dir);
+        if (!fd) continue;
+        struct dirent *f;
+        while ((f = readdir(fd))) {
+            if (f->d_name[0] == '.') continue;
+            char fp[300], target[512];
+            snprintf(fp, sizeof(fp), "/proc/%d/fd/%s", pid, f->d_name);
+            ssize_t n = readlink(fp, target, sizeof(target) - 1);
+            if (n <= 0) continue;
+            target[n] = 0;
+            if (!strcmp(target, node)) { found = 1; break; }
+        }
+        closedir(fd);
+    }
+    closedir(p);
+    return found;
+}
+
 /* ---------- main ---------- */
+
 
 int main(int argc, char **argv)
 {
     const char *capnode = NULL, *outnode = "/dev/video42", *subdev = "/dev/v4l-subdev6";
     int ae = 1, awb = 1, fixed_exp = -1, fixed_gain = -1;
+
+    setvbuf(stdout, NULL, _IOLBF, 0);
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-d") && i + 1 < argc) capnode = argv[++i];
@@ -450,10 +484,21 @@ int main(int argc, char **argv)
     setup_pipeline(port, capnode);
 
     struct capbuf bufs[NBUF] = {0};
-    int cfd = cap_open(capnode, bufs);
-    if (cfd < 0) return 1;
+    int cfd = -1, active = 0;
+    double idle_since = 0, last_check = 0;
     int ofd = out_open(outnode);
     if (ofd < 0) return 1;
+    /* v4l2loopback only advertises capture caps once the producer has sent a
+       frame, so register with one black frame and keep the sensor off */
+    {
+        size_t bytes = (size_t)WIDTH * HEIGHT * 2;
+        uint8_t *blank = malloc(bytes);
+        if (blank) {
+            for (size_t i = 0; i < bytes; i += 2) { blank[i] = 16; blank[i + 1] = 128; }
+            if (write(ofd, blank, bytes) < 0) perror("blank frame");
+            free(blank);
+        }
+    }
     char subdevbuf[300] = {0};
     if (!subdev) {
         if (find_subdev(subdevbuf, sizeof(subdevbuf)) == 0)
@@ -488,12 +533,54 @@ int main(int argc, char **argv)
     float luma = 0, mr = 0, mg = 0, mb = 0;
 
     while (running) {
+        double tnow = now_sec();
+
+        if (tnow - last_check > 0.5) {
+            last_check = tnow;
+            int someone = consumers_present(outnode);
+            if (!someone) {
+                if (!active) { usleep(200000); continue; }
+                if (!idle_since) { idle_since = tnow; printf("idle: waiting for a consumer\n"); }
+                else if (tnow - idle_since > 10.0) {
+                    enum v4l2_buf_type ot = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+                    xioctl(cfd, VIDIOC_STREAMOFF, &ot);
+                    struct v4l2_requestbuffers rb;
+                    memset(&rb, 0, sizeof(rb));
+                    rb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+                    rb.memory = V4L2_MEMORY_MMAP;
+                    rb.count = 0;
+                    xioctl(cfd, VIDIOC_REQBUFS, &rb);
+                    for (unsigned i = 0; i < NBUF; i++)
+                        if (bufs[i].start && bufs[i].start != MAP_FAILED) {
+                            munmap(bufs[i].start, bufs[i].len);
+                            bufs[i].start = NULL;
+                        }
+                    close(cfd);
+                    cfd = -1;
+                    active = 0;
+                    idle_since = 0;
+                    printf("idle: sensor stopped\n");
+                }
+            } else {
+                idle_since = 0;
+            }
+        }
+
+        if (!active) {
+            if (!consumers_present(outnode)) { usleep(200000); continue; }
+            setup_pipeline(port, capnode);
+            cfd = cap_open(capnode, bufs);
+            if (cfd < 0) { usleep(500000); continue; }
+            active = 1;
+            printf("consumer attached: streaming\n");
+        }
+
         struct v4l2_buffer b;
         memset(&b, 0, sizeof(b));
         b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         b.memory = V4L2_MEMORY_MMAP;
         struct pollfd pfd = { .fd = cfd, .events = POLLIN };
-        if (poll(&pfd, 1, 1000) <= 0) continue;
+        if (poll(&pfd, 1, 500) <= 0) continue;
         if (xioctl(cfd, VIDIOC_DQBUF, &b) < 0) {
             if (errno == EAGAIN) continue;
             perror("DQBUF");
@@ -529,7 +616,7 @@ int main(int argc, char **argv)
             }
         }
 
-        if (ae && sfd >= 0 && frames % 5 == 0 && luma > 1.0f) {
+        if (ae && active && sfd >= 0 && frames % 5 == 0 && luma > 1.0f) {
             float err = 112.0f / luma;
             float factor = powf(err, 0.6f);
             if (factor < 0.5f) factor = 0.5f;
@@ -568,9 +655,11 @@ int main(int argc, char **argv)
         }
     }
 
-    enum v4l2_buf_type t = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    xioctl(cfd, VIDIOC_STREAMOFF, &t);
-    close(cfd);
+    if (cfd >= 0) {
+        enum v4l2_buf_type t = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        xioctl(cfd, VIDIOC_STREAMOFF, &t);
+        close(cfd);
+    }
     close(ofd);
     if (sfd >= 0) close(sfd);
     free(yuyv);
