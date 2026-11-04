@@ -26,6 +26,7 @@ GC2607 传感器  →  gc2607.ko  →  IPU6 ISYS  →  gc2607d  →  v4l2loopbac
 - 自动曝光（目标亮度 112/255）和逐帧收敛的灰度世界白平衡
 - 双线性去马赛克、3×3 CCM、sRGB gamma、轻度降噪
 - 输出为标准 v4l2loopback 设备，OBS、Chrome、会议软件都能选
+- 按需取流：没人用虚拟摄像头时不碰传感器，指示灯不亮
 
 ## 现在还不行
 
@@ -50,6 +51,7 @@ sudo ./scripts/install-boot.sh  # 装模块和 systemd 服务，开机自动出�
 - 构建环境与可复现：`docs/BUILD.md`
 - 处理链和各参数的来由：`docs/DESIGN.md`
 - 踩过的坑：`docs/PITFALLS.md`
+- 屏蔽 IPU6 那 48 个空节点：`config/wireplumber/51-hide-ipu6.conf`
 
 ## 致谢
 
