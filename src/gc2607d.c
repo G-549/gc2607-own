@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <linux/videodev2.h>
 
 #define WIDTH        1920
@@ -145,7 +146,33 @@ static void setup_pipeline(int port, const char *node)
     if (system(cmd)) {}
 }
 
+
+/* find the gc2607 V4L2 subdev node (numbering changes across boots) */
+static int find_subdev(char *out, size_t n)
+{
+    DIR *d = opendir("/sys/class/video4linux");
+    if (!d) return -1;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (strncmp(e->d_name, "v4l-subdev", 10)) continue;
+        char path[512], name[300];
+        snprintf(path, sizeof(path), "/sys/class/video4linux/%s/name", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        int ok = fgets(name, sizeof(name), f) && strstr(name, "gc2607");
+        fclose(f);
+        if (ok) {
+            snprintf(out, n, "/dev/%s", e->d_name);
+            closedir(d);
+            return 0;
+        }
+    }
+    closedir(d);
+    return -1;
+}
+
 /* ---------- v4l2 ---------- */
+
 
 static int cap_open(const char *node, struct capbuf bufs[NBUF])
 {
@@ -427,8 +454,16 @@ int main(int argc, char **argv)
     if (cfd < 0) return 1;
     int ofd = out_open(outnode);
     if (ofd < 0) return 1;
+    char subdevbuf[300] = {0};
+    if (!subdev) {
+        if (find_subdev(subdevbuf, sizeof(subdevbuf)) == 0)
+            subdev = subdevbuf;
+        else
+            subdev = "/dev/v4l-subdev6";
+    }
     int sfd = open(subdev, O_RDWR);
     if (sfd < 0) perror("subdev");
+    else printf("subdev %s\n", subdev);
 
     int maxexp = sfd >= 0 ? ctrl_max(sfd, V4L2_CID_EXPOSURE) : 1108;
     int gain_max = sfd >= 0 ? ctrl_max(sfd, V4L2_CID_ANALOGUE_GAIN) : 1012;
@@ -523,7 +558,7 @@ int main(int argc, char **argv)
         }
 
         double tn = now_sec();
-        if (tn - tl >= 1.0) {
+        if (tn - tl >= 10.0) {
             printf("fps %.1f | luma %.0f | exp %d/%d | gain %d | awb %.2f %.2f %.2f | rgb %.4f %.4f %.4f\n",
                    (frames - printed) / (tn - tl), luma, exp, maxexp, gain,
                    P.awb[0], P.awb[1], P.awb[2], stats[3]>0?stats[0]/stats[3]:0, stats[3]>0?stats[1]/stats[3]:0, stats[3]>0?stats[2]/stats[3]:0);

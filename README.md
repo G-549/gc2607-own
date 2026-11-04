@@ -36,10 +36,12 @@ GC2607 传感器  →  gc2607.ko  →  IPU6 ISYS  →  gc2607d  →  v4l2loopbac
 ## 跑起来
 
 ```sh
-./scripts/build.sh          # 编译守护进程和内核模块，不下载任何二进制
-sudo ./scripts/install-boot.sh
-sudo ./scripts/run.sh       # 之后在应用里选 GC2607 Own
+./scripts/build.sh              # 编译守护进程和内核模块，不下载任何二进制
+sudo ./scripts/install-boot.sh  # 装模块和 systemd 服务，开机自动出图
 ```
+
+之后在应用里选 **GC2607 Own**。服务名 `gc2607-camera`，日志用
+`journalctl -u gc2607-camera` 看。
 
 需要内核头文件、gcc、v4l-utils、media-ctl、v4l2loopback。
 
