@@ -1,0 +1,20 @@
+# Maintainer: G-549 <g549@users.noreply.github.com>
+pkgname=gc2607-dkms
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="DKMS V4L2 driver for the GalaxyCore GC2607 camera on Intel IPU6"
+arch=('x86_64')
+url="https://github.com/G-549/gc2607-own"
+license=('GPL-2.0-only')
+depends=('dkms')
+makedepends=('git')
+source=("$url/releases/download/v$pkgver/gc2607-own-$pkgver.tar.gz")
+sha256sums=('0a9c52a487d69abfac77f1199847b2c2f76e80371116f8a05eacf7dd325b4867')
+install="$pkgname.install"
+
+package() {
+    install -d "$pkgdir/usr/src/gc2607-$pkgver"
+    cp -r "$srcdir/gc2607-own-$pkgver/kernel/." "$pkgdir/usr/src/gc2607-$pkgver/"
+    rm -f "$pkgdir/usr/src/gc2607-$pkgver"/*.ko
+    install -Dm644 "$srcdir/gc2607-own-$pkgver/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

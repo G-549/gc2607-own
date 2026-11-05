@@ -1,0 +1,33 @@
+# Maintainer: G-549 <g549@users.noreply.github.com>
+pkgname=gc2607-camera
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Userspace pipeline for the GalaxyCore GC2607 camera on Intel IPU6 (MateBook GT 14)"
+arch=('x86_64')
+url="https://github.com/G-549/gc2607-own"
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'v4l-utils' 'v4l2loopback-dkms')
+makedepends=('gcc')
+optdepends=('gc2607-dkms: sensor driver'
+            'wireplumber: hides the unused IPU6 capture nodes')
+source=("$url/releases/download/v$pkgver/gc2607-own-$pkgver.tar.gz")
+sha256sums=('0a9c52a487d69abfac77f1199847b2c2f76e80371116f8a05eacf7dd325b4867')
+
+build() {
+    make -C "$srcdir/gc2607-own-$pkgver/src"
+}
+
+package() {
+    install -Dm755 "$srcdir/gc2607-own-$pkgver/src/gc2607d" "$pkgdir/usr/bin/gc2607d"
+    install -Dm644 "$srcdir/gc2607-own-$pkgver/systemd/gc2607-camera.service" \
+        "$pkgdir/usr/lib/systemd/system/gc2607-camera.service"
+    install -Dm644 "$srcdir/gc2607-own-$pkgver/config/wireplumber/51-hide-ipu6.conf" \
+        "$pkgdir/usr/share/gc2607-camera/51-hide-ipu6.conf"
+    install -Dm644 /dev/stdin "$pkgdir/etc/modprobe.d/gc2607-v4l2loopback.conf" <<'CONF'
+options v4l2loopback video_nr=60 card_label="GC2607 Own" exclusive_caps=1
+CONF
+    install -Dm644 /dev/stdin "$pkgdir/etc/modules-load.d/v4l2loopback.conf" <<'CONF'
+v4l2loopback
+CONF
+    install -Dm644 "$srcdir/gc2607-own-$pkgver/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

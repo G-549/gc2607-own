@@ -22,7 +22,7 @@ printf 'options v4l2loopback video_nr=60 card_label="GC2607 Own" exclusive_caps=
 echo v4l2loopback > /etc/modules-load.d/v4l2loopback.conf
 
 # 3. daemon + unit
-install -m755 "$ROOT/src/gc2607d" /usr/local/bin/gc2607d
+install -m755 "$ROOT/src/gc2607d" /usr/bin/gc2607d
 install -m644 "$ROOT/systemd/gc2607-camera.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now gc2607-camera.service
